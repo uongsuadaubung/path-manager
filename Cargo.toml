@@ -1,0 +1,24 @@
+[package]
+name = "path-mgr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+winreg = "0.56"
+anyhow = "1.0.102"
+colored = "3.1.1"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Environment", "Win32_System_Console"] }
+eframe = "0.34.2"
+rfd = "0.17.2"
+
+[build-dependencies]
+winres = "0.1.12"
+
+[profile.release]
+opt-level = "z"      # Tối ưu hóa kích thước tối đa
+lto = true           # Link Time Optimization (Toàn cục)
+codegen-units = 1    # Giảm song song để tăng tối ưu hóa
+panic = "abort"      # Loại bỏ logic unwinding (giảm size đáng kể)
+strip = true         # Xóa bỏ hoàn toàn symbols và debug info
+debug = false        # Đảm bảo không có thông tin debug
