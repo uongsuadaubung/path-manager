@@ -10,7 +10,7 @@ use ui::PathApp;
 
 #[derive(Parser)]
 #[command(name = "path-mgr")]
-#[command(about = "🚀 Trình quản lý User & System PATH chuyên nghiệp cho Windows", long_about = None)]
+#[command(about = "🚀 Trình quản lý User & System PATH chuyên nghiệp", long_about = None)]
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,

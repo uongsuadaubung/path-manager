@@ -9,9 +9,21 @@ enum AppEvent {
     Restore(Vec<String>),
 }
 
+#[derive(Clone, Default)]
+struct PathDiagnostic {
+    exists: bool,
+    has_executables: bool,
+}
+
+#[derive(Clone)]
+struct PathInfo {
+    path: String,
+    diagnostic: PathDiagnostic,
+}
+
 pub struct PathApp {
-    user_paths: Vec<String>,
-    system_paths: Vec<String>,
+    user_paths: Vec<PathInfo>,
+    system_paths: Vec<PathInfo>,
     new_path_input: String,
     status_msg: String,
     search_query: String,
@@ -27,14 +39,15 @@ impl PathApp {
         setup_custom_fonts(&cc.egui_ctx);
         let needs_refresh = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
+        
+        #[cfg(windows)]
         spawn_registry_watcher(cc.egui_ctx.clone(), Arc::clone(&needs_refresh));
 
-        // Tự động đảm bảo các đường dẫn mặc định của Windows luôn tồn tại
         let _ = Self::ensure_defaults();
 
-        Self {
-            user_paths: read_current_paths(PathScope::User).unwrap_or_default(),
-            system_paths: read_current_paths(PathScope::System).unwrap_or_default(),
+        let mut app = Self {
+            user_paths: Vec::new(),
+            system_paths: Vec::new(),
             new_path_input: String::new(),
             status_msg: "Sẵn sàng.".to_string(),
             search_query: String::new(),
@@ -43,26 +56,86 @@ impl PathApp {
             needs_refresh,
             async_event_rx: rx,
             async_event_tx: tx,
-        }
+        };
+        app.refresh_all();
+        app
     }
 
     fn ensure_defaults() -> Result<(), anyhow::Error> {
-        let defaults = vec![
-            r"%USERPROFILE%\AppData\Local\Microsoft\WindowsApps".to_string(),
-        ];
+        let mut defaults = Vec::new();
+        
+        #[cfg(windows)]
+        defaults.push(r"%USERPROFILE%\AppData\Local\Microsoft\WindowsApps".to_string());
+        
+        #[cfg(unix)]
+        {
+            defaults.push("/usr/local/bin".to_string());
+            defaults.push("/usr/bin".to_string());
+            if let Some(home) = dirs::home_dir() {
+                defaults.push(format!("{}/.local/bin", home.display()));
+            }
+        }
+
         for d in defaults {
-            // add_path đã có sẵn logic kiểm tra trùng lặp thông minh
             let _ = add_path(PathScope::User, d);
         }
         Ok(())
     }
 
+    fn run_diagnostic(path: &str) -> PathDiagnostic {
+        let expanded = expand_env_vars(path);
+        let path_obj = std::path::Path::new(&expanded);
+        let exists = path_obj.exists();
+        
+        let mut has_executables = true;
+        if exists && path_obj.is_dir() {
+            #[cfg(windows)]
+            let exe_exts = ["exe", "com", "bat", "cmd", "ps1", "vbs", "msc", "js"];
+            
+            has_executables = std::fs::read_dir(path_obj).map(|entries| {
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    let p = e.path();
+                    if !p.is_file() { return false; }
+                    
+                    #[cfg(windows)]
+                    {
+                        p.extension()
+                            .and_then(|s| s.to_str())
+                            .map(|s| exe_exts.contains(&s.to_lowercase().as_str()))
+                            .unwrap_or(false)
+                    }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = e.metadata() {
+                            metadata.permissions().mode() & 0o111 != 0
+                        } else {
+                            false
+                        }
+                    }
+                })
+            }).unwrap_or(false);
+        }
+        PathDiagnostic { exists, has_executables }
+    }
+
     fn refresh_all(&mut self) {
-        self.user_paths = read_current_paths(PathScope::User).unwrap_or_default();
-        self.system_paths = read_current_paths(PathScope::System).unwrap_or_default();
+        let u_paths = read_current_paths(PathScope::User).unwrap_or_default();
+        let s_paths = read_current_paths(PathScope::System).unwrap_or_default();
+
+        self.user_paths = u_paths.into_iter().map(|p| PathInfo {
+            diagnostic: Self::run_diagnostic(&p),
+            path: p,
+        }).collect();
+
+        self.system_paths = s_paths.into_iter().map(|p| PathInfo {
+            diagnostic: Self::run_diagnostic(&p),
+            path: p,
+        }).collect();
     }
 }
 
+#[cfg(windows)]
 fn spawn_registry_watcher(ctx: egui::Context, needs_refresh: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         use windows_sys::Win32::System::Registry::{
@@ -99,16 +172,36 @@ fn spawn_registry_watcher(ctx: egui::Context, needs_refresh: Arc<AtomicBool>) {
 fn setup_custom_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     
-    if let Ok(tahoma_data) = std::fs::read("C:\\Windows\\Fonts\\tahoma.ttf") {
-        fonts.font_data.insert("tahoma".to_owned(), egui::FontData::from_owned(tahoma_data).into());
-        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "tahoma".to_owned());
-        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "tahoma".to_owned());
+    #[cfg(windows)]
+    {
+        if let Ok(tahoma_data) = std::fs::read("C:\\Windows\\Fonts\\tahoma.ttf") {
+            fonts.font_data.insert("tahoma".to_owned(), egui::FontData::from_owned(tahoma_data).into());
+            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "tahoma".to_owned());
+            fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "tahoma".to_owned());
+        }
+        
+        if let Ok(emoji_data) = std::fs::read("C:\\Windows\\Fonts\\seguiemj.ttf") {
+            fonts.font_data.insert("emoji".to_owned(), egui::FontData::from_owned(emoji_data).into());
+            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push("emoji".to_owned());
+            fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("emoji".to_owned());
+        }
     }
-    
-    if let Ok(emoji_data) = std::fs::read("C:\\Windows\\Fonts\\seguiemj.ttf") {
-        fonts.font_data.insert("emoji".to_owned(), egui::FontData::from_owned(emoji_data).into());
-        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push("emoji".to_owned());
-        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("emoji".to_owned());
+
+    #[cfg(unix)]
+    {
+        let paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        ];
+        for path in paths {
+            if let Ok(data) = std::fs::read(path) {
+                fonts.font_data.insert("linux_font".to_owned(), egui::FontData::from_owned(data).into());
+                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "linux_font".to_owned());
+                fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "linux_font".to_owned());
+                break;
+            }
+        }
     }
 
     ctx.set_fonts(fonts);
@@ -116,15 +209,16 @@ fn setup_custom_fonts(ctx: &egui::Context) {
 
 fn truncate_path(path: &str, max_len: usize) -> String {
     if path.len() <= max_len { return path.to_string(); }
-    let parts: Vec<&str> = path.split('\\').collect();
+    let sep = std::path::MAIN_SEPARATOR;
+    let parts: Vec<&str> = path.split(sep).collect();
     if parts.len() < 2 { return format!("{}...", &path[..max_len - 3]); }
     let first = parts[0];
     let last = parts[parts.len() - 1];
     let mid_len = max_len.saturating_sub(first.len() + last.len() + 5);
     if mid_len > 0 {
-        format!("{}\\{}...\\{}", first, ".".repeat(mid_len.min(3)), last)
+        format!("{}{}{}...{}{}", first, sep, ".".repeat(mid_len.min(3)), sep, last)
     } else {
-        format!("{}\\{}", first, last)
+        format!("{}{}{}", first, sep, last)
     }
 }
 
@@ -134,7 +228,7 @@ impl eframe::App for PathApp {
         if self.needs_refresh.swap(false, Ordering::SeqCst) {
             self.refresh_all();
             if self.editing_index.is_none() {
-                self.status_msg = "🔄 Đã cập nhật từ Registry.".to_string();
+                self.status_msg = "🔄 Đã cập nhật.".to_string();
             }
         }
 
@@ -186,7 +280,7 @@ impl eframe::App for PathApp {
                         self.status_msg = "♻️ Đã làm mới.".to_string();
                     }
                     if ui.button("📤 Sao lưu").clicked() {
-                        let paths = self.user_paths.clone();
+                        let paths: Vec<String> = self.user_paths.iter().map(|p| p.path.clone()).collect();
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name("path_backup.txt")
@@ -217,7 +311,7 @@ impl eframe::App for PathApp {
 
                 ui.horizontal(|ui| {
                     ui.label("✨ Thêm mới:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_path_input).hint_text("C:\\bin;...").desired_width(350.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.new_path_input).hint_text("Thêm đường dẫn...").desired_width(350.0));
                     if ui.button("➕ Thêm").clicked() && !self.new_path_input.is_empty() {
                         match add_path(PathScope::User, self.new_path_input.clone()) {
                             Ok(_) => {
@@ -257,19 +351,20 @@ impl eframe::App for PathApp {
                     ui.add_space(5.0);
 
                     for i in 0..self.user_paths.len() {
-                        let path = self.user_paths[i].clone();
+                        let path_info = self.user_paths[i].clone();
+                        let path = &path_info.path;
                         if !query.is_empty() && !path.to_lowercase().contains(&query) { continue; }
 
-                        let is_system_default = self.system_paths.iter().any(|sp| {
-                            is_same_path(sp, &path)
+                        let is_system_duplicate = self.system_paths.iter().any(|sp| {
+                            is_same_path(&sp.path, path)
                         });
                         let item_id = egui::Id::new("user_item").with(i);
                         
                         ui.horizontal(|ui| {
-                            if is_system_default {
+                            if is_system_duplicate {
                                 ui.label(egui::RichText::new("🛡️")).on_hover_text("Bản sao hệ thống (Đã khóa)");
                                 ui.label(egui::RichText::new(format!("{:>2}.", i + 1)).monospace().color(egui::Color32::DARK_GRAY));
-                                let display_path = truncate_path(&path, 85);
+                                let display_path = truncate_path(path, 85);
                                 ui.label(egui::RichText::new(display_path).color(egui::Color32::DARK_GRAY).italics());
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     ui.add_enabled(false, egui::Button::new("📝 Sửa"));
@@ -296,26 +391,10 @@ impl eframe::App for PathApp {
                                         if ui.button("💾 Lưu").clicked() { to_save = Some((i, self.edit_input.clone())); }
                                         if ui.button("🚫 Hủy").clicked() { self.editing_index = None; }
                                     } else {
-                                        let expanded = expand_env_vars(&path);
-                                        let path_obj = std::path::Path::new(&expanded);
-                                        let exists = path_obj.exists();
-                                        
-                                        let has_executables = if exists && path_obj.is_dir() {
-                                            let exe_exts = ["exe", "com", "bat", "cmd", "ps1", "vbs", "msc", "js"];
-                                            std::fs::read_dir(path_obj).map(|entries| {
-                                                entries.filter_map(|e| e.ok()).any(|e| {
-                                                    let p = e.path();
-                                                    p.is_file() && p.extension()
-                                                        .and_then(|s| s.to_str())
-                                                        .map(|s| exe_exts.contains(&s.to_lowercase().as_str()))
-                                                        .unwrap_or(false)
-                                                })
-                                            }).unwrap_or(false)
-                                        } else {
-                                            true
-                                        };
+                                        let exists = path_info.diagnostic.exists;
+                                        let has_executables = path_info.diagnostic.has_executables;
 
-                                        let display_path = truncate_path(&path, 75);
+                                        let display_path = truncate_path(path, 75);
                                         let text = if !exists {
                                             egui::RichText::new(format!("⚠️ {}", display_path)).color(egui::Color32::RED)
                                         } else if !has_executables {
@@ -354,7 +433,8 @@ impl eframe::App for PathApp {
                     ui.heading(egui::RichText::new("🖥️ System PATH").color(egui::Color32::GOLD).size(18.0));
                     ui.add_space(5.0);
 
-                    for (i, path) in self.system_paths.iter().enumerate() {
+                    for (i, path_info) in self.system_paths.iter().enumerate() {
+                        let path = &path_info.path;
                         if !query.is_empty() && !path.to_lowercase().contains(&query) { continue; }
 
                         ui.horizontal(|ui| {
@@ -374,9 +454,11 @@ impl eframe::App for PathApp {
             });
 
             if let Some((from, to)) = move_data {
-                let path = self.user_paths.remove(from);
-                self.user_paths.insert(to, path);
-                let _ = write_paths(PathScope::User, self.user_paths.clone());
+                let mut current_paths: Vec<String> = self.user_paths.iter().map(|p| p.path.clone()).collect();
+                let path = current_paths.remove(from);
+                current_paths.insert(to, path);
+                let _ = write_paths(PathScope::User, current_paths);
+                self.refresh_all();
                 self.status_msg = "🎯 Đã sắp xếp lại.".to_string();
             }
 

@@ -1,6 +1,6 @@
 # 🚀 Path Manager (path-mgr)
 
-Một công cụ chuyên nghiệp, mạnh mẽ để quản lý biến môi trường PATH trên Windows, hỗ trợ cả giao diện đồ họa (GUI) và dòng lệnh (CLI).
+Một công cụ chuyên nghiệp, mạnh mẽ để quản lý biến môi trường PATH đa nền tảng (Windows & Linux), hỗ trợ cả giao diện đồ họa (GUI) và dòng lệnh (CLI).
 
 ![Path Manager GUI](images/gui.png)
 
@@ -32,25 +32,30 @@ Một công cụ chuyên nghiệp, mạnh mẽ để quản lý biến môi trư
 
 ### Build từ source
 
-#### Cách 1: Build trực tiếp trên Windows
+#### Cách 1: Build thông thường (Native)
+Nếu bạn đang ở hệ điều hành nào và muốn build cho chính hệ điều hành đó:
 ```bash
 cargo build --release
 ```
-File thực thi sẽ nằm tại `target/release/path-mgr.exe`.
 
-#### Cách 2: Cross-compile từ Linux/WSL (Sử dụng Zig)
-Cách này giúp tạo ra file `.exe` cực nhẹ và tối ưu mà không cần cài đặt Visual Studio Build Tools nặng nề.
+#### Cách 2: Build đa nền tảng (Sử dụng Zig)
+Sử dụng `cargo-zigbuild` để tạo ra các bản build tối ưu cho cả Windows và Linux mà không cần cài đặt các bộ công cụ nặng nề của hệ điều hành đó.
 
-1. **Cài đặt công cụ:**
-   - Cài [Zig](https://ziglang.org/download/)
-   - Cài `cargo-zigbuild`: `cargo install cargo-zigbuild`
-   - Thêm target: `rustup target add x86_64-pc-windows-gnu`
+**Yêu cầu chung:**
+- Cài [Zig](https://ziglang.org/download/)
+- Cài `cargo-zigbuild`: `cargo install cargo-zigbuild`
 
-2. **Build:**
-   ```bash
-   cargo zigbuild --target x86_64-pc-windows-gnu --release
-   ```
-File thực thi sẽ nằm tại `target/x86_64-pc-windows-gnu/release/path-mgr.exe`.
+**1. Build cho Windows (tạo file .exe từ Linux/WSL):**
+```bash
+rustup target add x86_64-pc-windows-gnu
+cargo zigbuild --target x86_64-pc-windows-gnu --release
+```
+
+**2. Build cho Linux (tạo file chạy từ Windows):**
+```bash
+rustup target add x86_64-unknown-linux-gnu
+cargo zigbuild --target x86_64-unknown-linux-gnu --release
+```
 
 ### Chạy ứng dụng
 - **Mở GUI:** Chỉ cần click đúp vào file `.exe` hoặc chạy `path-mgr` không tham số.
