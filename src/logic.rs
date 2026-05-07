@@ -266,18 +266,11 @@ pub fn expand_env_vars(path: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 pub fn notify_system() {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::*;
-        let env_str = "Environment\0";
-        unsafe {
-            SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, env_str.as_ptr() as isize, SMTO_ABORTIFHUNG, 5000, std::ptr::null_mut());
-        }
-    }
-    #[cfg(unix)]
-    {
-        // Trên Linux không có cách thông báo trực tiếp cho toàn hệ thống
-        // Người dùng thường phải logout/login hoặc source lại file.
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let env_str = "Environment\0";
+    unsafe {
+        SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, env_str.as_ptr() as isize, SMTO_ABORTIFHUNG, 5000, std::ptr::null_mut());
     }
 }
