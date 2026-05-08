@@ -44,12 +44,21 @@ impl PathApp {
         spawn_registry_watcher(cc.egui_ctx.clone(), Arc::clone(&needs_refresh));
 
         let _ = Self::ensure_defaults();
+        let mut status_msg = "Sẵn sàng.".to_string();
+        let winget_paths = scan_winget_packages();
+        if !winget_paths.is_empty() {
+            if let Ok(count) = merge_paths(PathScope::User, winget_paths) {
+                if count > 0 {
+                    status_msg = format!("✅ Tự động thêm {} đường dẫn WinGet mới.", count);
+                }
+            }
+        }
 
         let mut app = Self {
             user_paths: Vec::new(),
             system_paths: Vec::new(),
             new_path_input: String::new(),
-            status_msg: "Sẵn sàng.".to_string(),
+            status_msg,
             search_query: String::new(),
             editing_index: None,
             edit_input: String::new(),

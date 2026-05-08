@@ -1,5 +1,6 @@
 use anyhow::Result;
-
+#[cfg(windows)]
+use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 
@@ -273,4 +274,57 @@ pub fn notify_system() {
     unsafe {
         SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, env_str.as_ptr() as isize, SMTO_ABORTIFHUNG, 5000, std::ptr::null_mut());
     }
+}
+
+#[cfg(windows)]
+pub fn scan_winget_packages() -> Vec<String> {
+    let mut found_paths = Vec::new();
+    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    if local_app_data.is_empty() {
+        return found_paths;
+    }
+
+    let winget_path = Path::new(&local_app_data).join("Microsoft").join("WinGet").join("Packages");
+    if !winget_path.exists() || !winget_path.is_dir() {
+        return found_paths;
+    }
+
+    let mut stack = vec![winget_path];
+    while let Some(current_dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current_dir) {
+            let mut has_exe = false;
+            let mut sub_dirs = Vec::new();
+
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                        if ext.eq_ignore_ascii_case("exe") {
+                            has_exe = true;
+                        }
+                    }
+                } else if path.is_dir() {
+                    sub_dirs.push(path);
+                }
+            }
+
+            if has_exe {
+                if let Some(path_str) = current_dir.to_str() {
+                    found_paths.push(path_str.to_string());
+                }
+                // Dừng lại tại thư mục có file exe, không quét sâu hơn trong nhánh này
+            } else {
+                // Tiếp tục quét các thư mục con
+                for sd in sub_dirs {
+                    stack.push(sd);
+                }
+            }
+        }
+    }
+    found_paths
+}
+
+#[cfg(not(windows))]
+pub fn scan_winget_packages() -> Vec<String> {
+    Vec::new()
 }
