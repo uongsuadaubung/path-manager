@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod i18n;
 mod logic;
 mod ui;
 
@@ -59,53 +60,62 @@ fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     attach_console();
 
+    // Khắc phục lỗi tương thích Vulkan trên Wayland/Linux bằng cách mặc định dùng OpenGL
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WGPU_BACKEND").is_err() {
+            unsafe { std::env::set_var("WGPU_BACKEND", "gl") };
+        }
+    }
+
     let args = Args::parse();
     let scope = if args.system { PathScope::System } else { PathScope::User };
 
     if args.command.is_some() {
+        use crate::i18n::{t, t_args};
         match args.command.unwrap() {
             Commands::List => {
                 let paths = read_current_paths(scope)?;
-                println!("\n{} ({})\n", "Danh sách PATH hiện tại:".cyan().bold(), if args.system { "System".red() } else { "User".green() });
+                println!("\n{} ({})\n", t("cli_list_current").cyan().bold(), if args.system { t("cli_system").red() } else { t("cli_user").green() });
                 for (i, p) in paths.iter().enumerate() {
                     println!("{:>2}. {}", (i + 1).to_string().yellow(), p);
                 }
-                println!("\n{} {} đường dẫn.", "Tổng cộng:".bold(), paths.len());
+                println!("\n{} {} {}", t("cli_total").bold(), paths.len(), t("cli_paths"));
             }
             Commands::Add { path } => {
                 match add_path(scope, path.clone()) {
-                    Ok(true) => println!("{} Đã thêm thành công: {}", "Thành công:".green().bold(), path),
-                    Ok(false) => println!("{} Đường dẫn đã tồn tại trong PATH.", "Thông báo:".yellow()),
-                    Err(e) => println!("{} {}", "Lỗi:".red().bold(), e),
+                    Ok(true) => println!("{} {}", t("cli_success").green().bold(), path),
+                    Ok(false) => println!("{} {}", t("cli_info").yellow(), t("cli_path_exists")),
+                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
                 }
             }
             Commands::Remove { index } => {
                 match remove_path(scope, index) {
-                    Ok(_) => println!("{} Đã xóa đường dẫn tại vị trí {}.", "Thành công:".green().bold(), index),
-                    Err(e) => println!("{} {}", "Lỗi:".red().bold(), e),
+                    Ok(_) => println!("{} {}", t("cli_success").green().bold(), t_args("cli_deleted_at", &index.to_string())),
+                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
                 }
             }
             Commands::Set { index, new_path } => {
                 match set_path(scope, index, new_path.clone()) {
                     Ok(old) => {
-                        println!("{} Đã cập nhật thành công.", "Thành công:".green().bold());
-                        println!("   {} {}", "Từ:".blue(), old);
-                        println!("   {} {}", "Thành:".green(), new_path);
+                        println!("{}", t("cli_updated_success").green().bold());
+                        println!("   {} {}", t("cli_from").blue(), old);
+                        println!("   {} {}", t("cli_to").green(), new_path);
                     }
-                    Err(e) => println!("{} {}", "Lỗi:".red().bold(), e),
+                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
                 }
             }
             Commands::Dedupe => {
                 match dedupe_paths(scope) {
-                    Ok(count) => println!("{} Đã loại bỏ {} đường dẫn trùng lặp.", "Thành công:".green().bold(), count),
-                    Err(e) => println!("{} {}", "Lỗi:".red().bold(), e),
+                    Ok(count) => println!("{} {}", t("cli_success").green().bold(), t_args("cli_deduped_count", &count.to_string())),
+                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
                 }
             }
             Commands::Backup { file } => {
                 let paths = read_current_paths(scope)?;
                 let content = paths.join("\n");
                 std::fs::write(&file, content)?;
-                println!("{} Đã sao lưu PATH vào file: {}", "Thành công:".green().bold(), file);
+                println!("{} {}", t("cli_success").green().bold(), t_args("cli_backed_up_to", &file));
             }
             Commands::Restore { file, override_path } => {
                 let content = std::fs::read_to_string(&file)?;
@@ -113,10 +123,10 @@ fn main() -> anyhow::Result<()> {
                 
                 if override_path {
                     write_paths(scope, imported_paths)?;
-                    println!("{} Đã ghi đè hoàn toàn PATH từ file.", "Thành công:".green().bold());
+                    println!("{}", t("cli_restored_overwrite").green().bold());
                 } else {
                     let count = merge_paths(scope, imported_paths)?;
-                    println!("{} Đã hợp nhất thêm {} đường dẫn mới.", "Thành công:".green().bold(), count);
+                    println!("{} {}", t("cli_success").green().bold(), t_args("cli_restored_merge", &count.to_string()));
                 }
             }
         }
