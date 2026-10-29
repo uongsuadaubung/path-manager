@@ -1,147 +1,180 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-mod i18n;
+#[macro_use]
+mod compat;
+mod language;
 mod logic;
-mod ui;
+mod tui;
 
-use clap::{Parser, Subcommand};
-use colored::*;
-use logic::*;
-use ui::PathApp;
+use compat::anyhow::Result;
+use language::text::*;
+use logic::PathScope;
 
-#[derive(Parser)]
-#[command(name = "path-mgr")]
-#[command(about = "🚀 Trình quản lý User & System PATH chuyên nghiệp", long_about = None)]
-struct Args {
-    #[command(subcommand)]
-    command: Option<Commands>,
+fn print_help() {
+    println!(
+        r#"PATH Manager (path-mgr) v{version}
+Windows Environment PATH Editor (TUI & CLI)
 
-    /// Thao tác trên System PATH (yêu cầu quyền Admin) thay vì User PATH
-    #[arg(short, long, global = true)]
-    system: bool,
+USAGE:
+    path-mgr [COMMAND] [OPTIONS]
+
+WITHOUT COMMAND:
+    Launches the interactive Terminal User Interface (TUI).
+
+COMMANDS:
+    list                     List all paths in current scope
+    add <PATH>               Add a new path entry
+    remove <INDEX>           Remove a path entry by its 1-based index
+    set <INDEX> <PATH>       Update an existing path entry
+    dedupe                   Remove duplicate and shadowed entries
+    backup [-f FILE]         Backup current PATH list to file (default: path_backup.txt)
+    restore [-f FILE] [-o]   Restore or merge PATH list from file (-o to overwrite)
+    help, --help, -h         Print this help message
+    --version, -v            Print version information
+
+OPTIONS:
+    --system, -s             Operate on System (Machine) PATH instead of User PATH
+"#,
+        version = env!("CARGO_PKG_VERSION")
+    );
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// ✨ Liệt kê tất cả đường dẫn
-    List,
-    /// ➕ Thêm đường dẫn mới
-    Add { path: String },
-    /// 🗑 Xóa đường dẫn theo số thứ tự
-    Remove { index: usize },
-    /// ✏️ Cập nhật đường dẫn tại vị trí cụ thể
-    Set { index: usize, new_path: String },
-    /// 🧹 Loại bỏ các đường dẫn trùng lặp
-    Dedupe,
-    /// 📤 Sao lưu danh sách PATH ra file
-    Backup {
-        #[arg(short, long, default_value = "path_backup.txt")]
-        file: String,
-    },
-    /// 📥 Khôi phục hoặc hợp nhất PATH từ file
-    Restore {
-        #[arg(short, long, default_value = "path_backup.txt")]
-        file: String,
-        /// Ghi đè hoàn toàn PATH hiện tại (mặc định là Hợp nhất)
-        #[arg(short, long)]
-        override_path: bool,
-    },
-}
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
 
-#[cfg(target_os = "windows")]
-fn attach_console() {
-    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
-    unsafe {
-        AttachConsole(ATTACH_PARENT_PROCESS);
-    }
-}
-
-fn main() -> anyhow::Result<()> {
-    #[cfg(target_os = "windows")]
-    attach_console();
-
-    // Khắc phục lỗi tương thích Vulkan trên Wayland/Linux bằng cách mặc định dùng OpenGL
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var("WGPU_BACKEND").is_err() {
-            unsafe { std::env::set_var("WGPU_BACKEND", "gl") };
-        }
+    // If no arguments passed, launch the interactive TUI
+    if args.len() <= 1 {
+        return tui::run();
     }
 
-    let args = Args::parse();
-    let scope = if args.system { PathScope::System } else { PathScope::User };
-
-    if args.command.is_some() {
-        use crate::i18n::{t, t_args};
-        match args.command.unwrap() {
-            Commands::List => {
-                let paths = read_current_paths(scope)?;
-                println!("\n{} ({})\n", t("cli_list_current").cyan().bold(), if args.system { t("cli_system").red() } else { t("cli_user").green() });
-                for (i, p) in paths.iter().enumerate() {
-                    println!("{:>2}. {}", (i + 1).to_string().yellow(), p);
-                }
-                println!("\n{} {} {}", t("cli_total").bold(), paths.len(), t("cli_paths"));
-            }
-            Commands::Add { path } => {
-                match add_path(scope, path.clone()) {
-                    Ok(true) => println!("{} {}", t("cli_success").green().bold(), path),
-                    Ok(false) => println!("{} {}", t("cli_info").yellow(), t("cli_path_exists")),
-                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
-                }
-            }
-            Commands::Remove { index } => {
-                match remove_path(scope, index) {
-                    Ok(_) => println!("{} {}", t("cli_success").green().bold(), t_args("cli_deleted_at", &index.to_string())),
-                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
-                }
-            }
-            Commands::Set { index, new_path } => {
-                match set_path(scope, index, new_path.clone()) {
-                    Ok(old) => {
-                        println!("{}", t("cli_updated_success").green().bold());
-                        println!("   {} {}", t("cli_from").blue(), old);
-                        println!("   {} {}", t("cli_to").green(), new_path);
-                    }
-                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
-                }
-            }
-            Commands::Dedupe => {
-                match dedupe_paths(scope) {
-                    Ok(count) => println!("{} {}", t("cli_success").green().bold(), t_args("cli_deduped_count", &count.to_string())),
-                    Err(e) => println!("{} {}", t("cli_error").red().bold(), e),
-                }
-            }
-            Commands::Backup { file } => {
-                let paths = read_current_paths(scope)?;
-                let content = paths.join("\n");
-                std::fs::write(&file, content)?;
-                println!("{} {}", t("cli_success").green().bold(), t_args("cli_backed_up_to", &file));
-            }
-            Commands::Restore { file, override_path } => {
-                let content = std::fs::read_to_string(&file)?;
-                let imported_paths: Vec<String> = content.lines().filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
-                
-                if override_path {
-                    write_paths(scope, imported_paths)?;
-                    println!("{}", t("cli_restored_overwrite").green().bold());
-                } else {
-                    let count = merge_paths(scope, imported_paths)?;
-                    println!("{} {}", t("cli_success").green().bold(), t_args("cli_restored_merge", &count.to_string()));
-                }
-            }
-        }
+    // Determine scope
+    let has_system_flag = args.iter().any(|a| a == "--system" || a == "-s");
+    let scope = if has_system_flag {
+        PathScope::System
     } else {
-        let options = eframe::NativeOptions {
-            viewport: eframe::egui::ViewportBuilder::default()
-                .with_inner_size([900.0, 650.0])
-                .with_min_inner_size([800.0, 500.0]),
-            ..Default::default()
-        };
-        eframe::run_native(
-            "Path Manager",
-            options,
-            Box::new(|cc| Ok(Box::new(PathApp::new(cc)))),
-        ).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        PathScope::User
+    };
+
+    // Filter out flags to get the positional command and arguments
+    let mut positional_args = Vec::new();
+    let mut file_override = false;
+    let mut file_path = "path_backup.txt".to_string();
+
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--system" || arg == "-s" {
+            i += 1;
+        } else if arg == "-o" || arg == "--override" {
+            file_override = true;
+            i += 1;
+        } else if arg == "-f" || arg == "--file" {
+            if i + 1 < args.len() {
+                file_path = args[i + 1].clone();
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if arg.starts_with("-f=") {
+            file_path = arg[3..].to_string();
+            i += 1;
+        } else if arg.starts_with("--file=") {
+            file_path = arg[7..].to_string();
+            i += 1;
+        } else {
+            positional_args.push(arg.clone());
+            i += 1;
+        }
+    }
+
+    if positional_args.is_empty() {
+        return tui::run();
+    }
+
+    let cmd = positional_args[0].to_lowercase();
+    match cmd.as_str() {
+        "list" => {
+            let paths = logic::read_current_paths(scope)?;
+            println!("\n{} ({} PATH):\n", CLI_CURRENT_PATHS, scope.name());
+            for (idx, p) in paths.iter().enumerate() {
+                println!("{:>2}. {}", idx + 1, p);
+            }
+            println!("\n{}{}", CLI_TOTAL_PATHS, paths.len());
+        }
+        "add" => {
+            if positional_args.len() < 2 {
+                eprintln!("Error: Missing path argument. Usage: path-mgr add <PATH>");
+                std::process::exit(1);
+            }
+            let new_path = positional_args[1].clone();
+            match logic::add_path(scope, new_path.clone()) {
+                Ok(true) => println!("Added successfully: {}", new_path),
+                Ok(false) => println!("{}", CLI_PATH_EXISTS),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "remove" => {
+            if positional_args.len() < 2 {
+                eprintln!("Error: Missing index argument. Usage: path-mgr remove <INDEX>");
+                std::process::exit(1);
+            }
+            let index: usize = positional_args[1].parse().map_err(|_| {
+                compat::anyhow::anyhow!("Invalid index: '{}'", positional_args[1])
+            })?;
+            logic::remove_path(scope, index)?;
+            println!("Successfully removed path at index #{}", index);
+        }
+        "set" => {
+            if positional_args.len() < 3 {
+                eprintln!("Error: Missing arguments. Usage: path-mgr set <INDEX> <NEW_PATH>");
+                std::process::exit(1);
+            }
+            let index: usize = positional_args[1].parse().map_err(|_| {
+                compat::anyhow::anyhow!("Invalid index: '{}'", positional_args[1])
+            })?;
+            let new_path = positional_args[2].clone();
+            let old = logic::set_path(scope, index, new_path.clone())?;
+            println!("{}", CLI_UPDATED_SUCCESS);
+            println!("{}{}", CLI_FROM, old);
+            println!("{}{}", CLI_TO, new_path);
+        }
+        "dedupe" => {
+            let count = logic::dedupe_paths(scope)?;
+            println!("Cleaned {} duplicate/redundant path(s).", count);
+        }
+        "backup" => {
+            let paths = logic::read_current_paths(scope)?;
+            let content = paths.join("\n");
+            std::fs::write(&file_path, content)?;
+            println!("Backup saved successfully to: {}", file_path);
+        }
+        "restore" => {
+            let content = std::fs::read_to_string(&file_path)?;
+            let imported: Vec<String> = content
+                .lines()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if file_override {
+                logic::write_paths(scope, imported)?;
+                println!("Successfully restored and replaced PATH from: {}", file_path);
+            } else {
+                let count = logic::merge_paths(scope, imported)?;
+                println!("Merged {} new path(s) from: {}", count, file_path);
+            }
+        }
+        "help" | "--help" | "-h" => {
+            print_help();
+        }
+        "--version" | "-v" => {
+            println!("path-mgr v{}", env!("CARGO_PKG_VERSION"));
+        }
+        other => {
+            eprintln!("Unknown command: '{}'. Run 'path-mgr --help' for usage.", other);
+            std::process::exit(1);
+        }
     }
 
     Ok(())
